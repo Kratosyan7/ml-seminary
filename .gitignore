@@ -1,0 +1,6 @@
+.env
+.venv/
+faiss_index/
+.DS_Store
+__pycache__/
+UI/pipelines/agent_stub/
