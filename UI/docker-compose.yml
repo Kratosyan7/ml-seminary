@@ -17,6 +17,7 @@ services:
       - ./pipelines:/app/pipelines
     environment:
       - AGENT_API_BASE_URL=http://host.docker.internal:8000
+      - AGENT_API_TIMEOUT_SECONDS=120
     # depends_on:
     #   - ollama
     restart: unless-stopped

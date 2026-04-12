@@ -16,6 +16,8 @@ from .schemas import (
     ContractChangeResponse,
     ContractChangeResult,
     ContractExtract,
+    EmailDraftContent,
+    EmailDraft,
     PolicyRuleExtract,
 )
 
@@ -124,6 +126,39 @@ def _extract_unit(text: Optional[str]) -> Optional[str]:
     return None
 
 
+def _extract_emails(text: Optional[str]) -> List[str]:
+    if not text:
+        return []
+    found = re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text)
+    deduped: List[str] = []
+    seen = set()
+    for email in found:
+        lower = email.lower()
+        if lower in seen:
+            continue
+        seen.add(lower)
+        deduped.append(email)
+    return deduped
+
+
+def _clean_draft_body(text: str) -> str:
+    body = text.strip()
+    body = re.sub(r"^Body:\s*", "", body, flags=re.IGNORECASE)
+    body = re.sub(r"^\*\*Тело письма:\*\*\s*", "", body, flags=re.IGNORECASE)
+    body = re.sub(r"^\*\*Body:\*\*\s*", "", body, flags=re.IGNORECASE)
+    body = re.sub(r"\[Your Name\].*", "", body, flags=re.IGNORECASE | re.S)
+    body = re.sub(r"\[Your Position\].*", "", body, flags=re.IGNORECASE | re.S)
+    body = re.sub(r"\[Company Name\].*", "", body, flags=re.IGNORECASE | re.S)
+    body = re.sub(r"\[Ваше имя\].*", "", body, flags=re.IGNORECASE | re.S)
+    body = re.sub(r"\[Название организации\].*", "", body, flags=re.IGNORECASE | re.S)
+    body = re.sub(r"Please find attached.*", "", body, flags=re.IGNORECASE)
+    body = re.sub(r"review the attached document.*", "", body, flags=re.IGNORECASE)
+    body = re.sub(r"kindly provide us with a supporting document.*", "", body, flags=re.IGNORECASE)
+    body = re.sub(r"Пожалуйста, уведомите нас.*", "", body, flags=re.IGNORECASE)
+    body = re.sub(r"\n{3,}", "\n\n", body)
+    return body.strip()
+
+
 def _enrich_policy_rule(rule: PolicyRuleExtract, context: str) -> PolicyRuleExtract:
     if rule.new_value is None:
         rule.new_value = _extract_number(rule.source_quote) or _extract_number(context)
@@ -135,6 +170,14 @@ def _enrich_policy_rule(rule: PolicyRuleExtract, context: str) -> PolicyRuleExtr
 
 
 def _enrich_contract_extract(contract: ContractExtract, context: str) -> ContractExtract:
+    emails = contract.emails or []
+    if not emails:
+        emails = _extract_emails(contract.source_quote) or _extract_emails(context)
+    contract.emails = emails
+
+    if contract.email is None and emails:
+        contract.email = emails[0]
+
     if contract.current_value is None:
         contract.current_value = (
             _extract_number(contract.source_quote)
@@ -149,6 +192,9 @@ def _enrich_contract_extract(contract: ContractExtract, context: str) -> Contrac
         )
     else:
         contract.unit = _extract_unit(contract.unit) or contract.unit
+
+    if contract.evidence is None:
+        contract.evidence = contract.source_quote
 
     return contract
 
@@ -396,17 +442,22 @@ class RAGStore:
             doc_id=doc_id,
             employee_name=contract.employee_name,
             email=contract.email,
+            emails=contract.emails,
             old_value=contract.current_value,
             new_value=rule.new_value,
             unit=contract.unit or rule.unit,
             needs_change=False,
             reason="",
             source_quote=contract.source_quote,
+            evidence=contract.evidence,
         )
 
         if contract.current_value is None:
-            result.needs_change = True
-            result.reason = "В договоре не найдено числовое значение условия."
+            result.needs_change = False
+            result.reason = (
+                "В договоре не найдено явное условие о минимальной длительности отпуска "
+                "(нужна ручная проверка)."
+            )
             return result
 
         if rule_unit is not None and contract_unit is not None and rule_unit != contract_unit:
@@ -432,22 +483,68 @@ class RAGStore:
         rule: PolicyRuleExtract,
         contract_result: ContractChangeResult,
     ) -> Tuple[str, str]:
-        employee_name = contract_result.employee_name or "коллега"
-        old_value = "не указано" if contract_result.old_value is None else str(contract_result.old_value)
-        new_value = "не указано" if contract_result.new_value is None else str(contract_result.new_value)
-        unit = contract_result.unit or rule.unit or "календарных дней"
+        llm = build_llm()
+        draft_chain = llm.with_structured_output(EmailDraftContent)
+        prompt = ChatPromptTemplate.from_messages([
+            ("system",
+             "Ты помощник HR. Сформируй короткое и корректное уведомление.\n"
+             "Не давай юридических трактовок, не делай обещаний.\n"
+             "Тон: нейтральный, деловой.\n"
+             "Язык ответа: русский.\n"
+             "Не упоминай, что ты ИИ.\n"
+             "Не выдумывай вложения, подписи, согласования, подтверждения, приложения, ссылки, документы или факты, которых нет во входе.\n"
+             "Не используй placeholders вроде [Your Name].\n"
+             "Не проси сотрудника прислать документы, подтверждения или дополнительные сведения.\n"
+             "Не указывай сроки, если их нет во входе.\n"
+             "Пиши коротко: тема + 2-3 абзаца.\n"
+             "Верни только два поля structured output: subject и body."),
+            ("human",
+             "Сформируй письмо сотруднику о необходимости обновить условие договора.\n\n"
+             "Данные:\n"
+             "- ФИО: {employee_name}\n"
+             "- Doc ID: {doc_id}\n"
+             "- Текущее условие (минимальный отпуск): {current_min_days}\n"
+             "- Новое требование (политика): минимум {required_min_days} дней\n"
+             "- Подтверждающий фрагмент (evidence): {evidence}"),
+        ])
 
-        subject = "Изменение условия отпуска по трудовому договору"
-        body = (
-            f"Здравствуйте, {employee_name}.\n\n"
-            f"По результатам проверки кадровых документов выявлено, что текущее условие отпуска "
-            f"в договоре ({old_value} {unit}) не соответствует актуальной policy компании "
-            f"({new_value} {unit}).\n\n"
-            "Просим согласовать обновление условия трудового договора и подготовить изменения "
-            "для оформления.\n\n"
-            "Это письмо является черновиком уведомления и требует проверки человеком."
+        msgs = prompt.format_messages(
+            employee_name=contract_result.employee_name or "Коллега",
+            doc_id=contract_result.doc_id,
+            current_min_days=contract_result.old_value,
+            required_min_days=contract_result.new_value,
+            evidence=contract_result.evidence or "(не указан)",
         )
+        draft = draft_chain.invoke(msgs)
+        subject = (draft.subject or "").strip() or "Уточнение условий трудового договора"
+        body = (draft.body or "").strip() or "Черновик не сформирован."
+        body = _clean_draft_body(body)
         return subject, body
+
+    def collect_email_drafts(self, response: ContractChangeResponse) -> List[EmailDraft]:
+        drafts: List[EmailDraft] = []
+        for item in response.results:
+            if not item.needs_change:
+                continue
+            if not item.draft_subject or not item.draft_body:
+                continue
+            drafts.append(EmailDraft(
+                doc_id=item.doc_id,
+                to=item.emails,
+                subject=item.draft_subject,
+                body=item.draft_body,
+            ))
+        return drafts
+
+    def send_email_stub(self, drafts: List[EmailDraft]) -> List[EmailDraft]:
+        for draft in drafts:
+            print("=== EMAIL DRAFT ===")
+            print("Doc ID:", draft.doc_id)
+            print("To:", ", ".join(draft.to) if draft.to else "(no emails)")
+            print("Subject:", draft.subject)
+            print(draft.body)
+            print()
+        return drafts
 
     def analyze_contract_changes(
         self,
@@ -466,12 +563,14 @@ class RAGStore:
                     doc_id=contract_doc_id,
                     employee_name=None,
                     email=None,
+                    emails=[],
                     old_value=None,
                     new_value=rule.new_value,
                     unit=rule.unit,
-                    needs_change=True,
+                    needs_change=False,
                     reason=f"Не удалось корректно обработать договор: {exc}",
                     source_quote=None,
+                    evidence=None,
                     draft_subject=None,
                     draft_body=None,
                 )

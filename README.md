@@ -1,41 +1,94 @@
 # RAG Contract Change Agent
 
-Локальный demo-проект для проверки трудовых договоров на соответствие новой policy компании по отпускам.
+Проект показывает, как из базового `RAG` сделать прикладного агента для кадровых документов.
 
 Система:
-- загружает `policy` и `contract` документы
-- строит `FAISS` индекс
-- через `Ollama` извлекает правило из policy и значения из договоров
-- кодом сравнивает условия
-- генерирует `draft` уведомлений для договоров, где нужно изменение
-- показывает результат через `FastAPI` и `Open WebUI`
+
+- читает policy компании
+- читает трудовые договоры
+- находит условие про отпуск
+- сравнивает старое условие с новым правилом
+- формирует черновики уведомлений для договоров, которые нужно обновить
+
+
+## Что делает проект
+
+Идея простая:
+
+1. Есть документ с новым правилом компании.
+2. Есть несколько трудовых договоров.
+3. Агент находит нужные фрагменты в документах через `RAG`.
+4. Извлекает структуру:
+   - имя сотрудника
+   - email
+   - текущее значение условия
+   - новое значение из policy
+5. Сравнение делает кодом, а не LLM.
+6. Если договор не соответствует policy, агент готовит `draft` письма.
+
+Важно:
+
+- письма не отправляются автоматически
+- система делает только черновики
+- решение работает локально через `Ollama`
+
 
 ## Архитектура
 
-Поток такой:
+В проекте есть 3 основные части.
 
-1. `FastAPI` backend хранит документы и индекс.
-2. `RAGStore` ищет релевантные чанки.
-3. `Ollama` извлекает структуру из контекста.
-4. Python-код сравнивает старое и новое значение.
-5. `Open WebUI pipeline` вызывает backend и показывает отчет в чате.
+### 1. Backend на FastAPI
 
-Основные части проекта:
-- [api/app/main.py](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/api/app/main.py) — API и автозагрузка demo-документов
-- [api/app/rag.py](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/api/app/rag.py) — RAG, extraction, compare, draft generation
-- [api/app/schemas.py](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/api/app/schemas.py) — Pydantic-схемы
-- [UI/pipelines/agent_stub.py](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/UI/pipelines/agent_stub.py) — pipeline-клиент backend
-- [UI/docker-compose.yml](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/UI/docker-compose.yml) — запуск `Open WebUI`
+Backend:
 
-## Требования
+- хранит документы
+- строит `FAISS` индекс
+- делает retrieval
+- вызывает локальную модель через `Ollama`
+- сравнивает условия
+- возвращает JSON-результат
 
-- Python 3.11+
-- `Ollama`
-- Docker Desktop
+Главные файлы:
 
-## Настройка
+- [main.py](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/api/app/main.py)
+- [rag.py](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/api/app/rag.py)
+- [schemas.py](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/api/app/schemas.py)
 
-### 1. Python-зависимости
+### 2. Локальная модель через Ollama
+
+`Ollama` используется для:
+
+- извлечения правила из policy
+- извлечения имени, email и текущего условия из договора
+- генерации черновика письма
+
+### 3. Интерфейс через Open WebUI
+
+`Open WebUI` нужен как удобный чат-интерфейс для демонстрации.
+
+Файл:
+
+- [agent_stub.py](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/UI/pipelines/agent_stub.py)
+
+Он получает запрос из UI, обращается в backend и показывает итоговый ответ пользователю.
+
+
+## Demo-документы
+
+Для демонстрации используются файлы:
+
+- [demo_policy.md](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/notebooks/data/demo_policy.md)
+- [contract_001.md](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/notebooks/contracts/contract_001.md)
+- [contract_002.md](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/notebooks/contracts/contract_002.md)
+- [contract_003.md](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/notebooks/contracts/contract_003.md)
+- [contract_004.md](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/notebooks/contracts/contract_004.md)
+
+При старте backend эти demo-документы можно автоматически подгружать через `PRELOAD_DEMO_DOCS=1`.
+
+
+## Как запустить
+
+### 1. Подготовить Python-окружение
 
 ```bash
 cd /Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary
@@ -45,43 +98,25 @@ cd api
 python3 -m pip install -r requirements.txt
 ```
 
-### 2. Ollama
+### 2. Запустить Ollama
 
-Запустить сервер:
+В отдельном окне терминала:
 
 ```bash
 ollama serve
 ```
 
-Скачать модель:
+Если модель еще не скачана:
 
 ```bash
 ollama pull qwen2.5:1.5b
 ```
 
-### 3. Конфиг
-
-Используется файл [notebooks/.env](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/notebooks/.env).
-
-Ключевые переменные:
-
-```env
-USE_OPENAI=0
-OLLAMA_BASE_URL=http://127.0.0.1:11434
-OLLAMA_CHAT_MODEL=qwen2.5:1.5b
-USE_OLLAMA_EMBEDDINGS=0
-HF_EMBED_MODEL=sentence-transformers/all-MiniLM-L6-v2
-PRELOAD_DEMO_DOCS=1
-```
-
-Если `PRELOAD_DEMO_DOCS=1`, backend сам подгрузит demo policy и 4 договора при старте.
-
-## Запуск
-
-### Backend
+### 3. Запустить backend
 
 ```bash
 cd /Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/api
+source ../.venv/bin/activate
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -98,40 +133,43 @@ Swagger:
 http://localhost:8000/docs
 ```
 
-### Open WebUI
+### 4. Запустить Open WebUI
 
 ```bash
 cd /Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/UI
 docker compose up
 ```
 
-UI:
+После запуска:
 
 ```text
 http://localhost:3000
 ```
 
+
+## Что написать в чате
+
+В `Open WebUI` можно отправить запрос:
+
+```text
+Проверь договоры на соответствие новой политике отпусков
+```
+
+Ожидаемое поведение:
+
+- система покажет summary по 4 договорам
+- `contract_001` и `contract_003` будут помечены как требующие изменений
+- `contract_002` и `contract_004` будут отмечены как соответствующие policy
+- для проблемных договоров появятся черновики уведомлений
+
+
 ## Главный endpoint
+
+Основной endpoint backend:
 
 ### `POST /contracts/analyze-change`
 
-Request:
-
-```json
-{
-  "policy_doc_id": "policy_main",
-  "contract_doc_ids": ["contract_001", "contract_002", "contract_003", "contract_004"]
-}
-```
-
-Response содержит:
-- извлеченное правило из policy
-- список результатов по договорам
-- `needs_change`
-- причину
-- draft письма для проблемных договоров
-
-Пример вызова:
+Пример запроса:
 
 ```bash
 curl -s -X POST "http://localhost:8000/contracts/analyze-change" \
@@ -142,30 +180,46 @@ curl -s -X POST "http://localhost:8000/contracts/analyze-change" \
   }'
 ```
 
-## Ожидаемый demo-результат
+Дополнительно есть endpoint-заглушка для черновиков:
 
-- `contract_001` → `7 < 10` → нужно изменение
-- `contract_002` → `14 >= 10` → ok
-- `contract_003` → `8 < 10` → нужно изменение
-- `contract_004` → `10 >= 10` → ok
+### `POST /contracts/send-drafts-stub`
 
-Для `contract_001` и `contract_003` должны появиться черновики уведомлений.
+Он ничего реально не отправляет, а только возвращает подготовленные draft-письма и печатает их в лог.
 
-## Что говорить на защите
 
-Короткий сценарий:
+## Ожидаемый результат demo
 
-1. Это не просто чат с документами, а прикладной RAG-агент.
-2. В backend загружаются policy и договоры, дальше строится `FAISS` индекс.
-3. `Ollama` извлекает структуру из найденного контекста: правило policy, имя, email и текущее значение из договора.
-4. Сравнение делает не LLM, а Python-код. Это делает решение детерминированным.
-5. Если договор не соответствует policy, система не отправляет письма автоматически, а готовит только `draft`.
-6. В UI пользователь получает сводку по договорам и черновики уведомлений.
+Политика:
+
+- минимум 10 дней
+
+Результат сравнения:
+
+- `contract_001` → 7 дней → нужно изменение
+- `contract_002` → 14 дней → соответствует
+- `contract_003` → 8 дней → нужно изменение
+- `contract_004` → 10 дней → соответствует
+
+
+## Что важно сказать на защите
+
+1. Это не просто чат по документам, а прикладной `RAG`-агент.
+2. Retrieval используется для поиска релевантных фрагментов policy и договоров.
+3. `LLM` используется для извлечения структуры и генерации черновиков.
+4. Критическая бизнес-логика сравнения сделана кодом, а не LLM.
+5. Письма не отправляются автоматически, только формируются как `draft`.
+6. Вся система работает локально через `Ollama`, без OpenAI API.
+
 
 ## Ограничения текущей версии
 
-- индекс и документы хранятся в памяти
-- пока нет постоянного хранилища
-- авторассылки нет
-- extraction завязан на demo-формулировки и может требовать доработки для более шумных документов
-- `MCP` в этой версии не используется
+- документы и индекс хранятся в памяти
+- нет постоянного хранилища результатов
+- нет реальной рассылки
+- нет production-механизмов вроде очередей, аудита и контроля доступа
+- тексты писем сделаны как demo-черновики
+
+
+## Коротко
+
+Это локальный проект, который читает policy и трудовые договоры, находит несоответствия и готовит черновики уведомлений.

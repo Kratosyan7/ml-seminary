@@ -45,21 +45,25 @@ class PolicyRuleExtract(BaseModel):
 class ContractExtract(BaseModel):
     employee_name: Optional[str] = Field(default=None, description="ФИО сотрудника")
     email: Optional[str] = Field(default=None, description="Email для уведомления")
+    emails: List[str] = Field(default_factory=list, description="Все email адреса, явно найденные в договоре")
     current_value: Optional[int] = Field(default=None, description="Текущее значение условия в договоре")
     unit: Optional[str] = Field(default=None, description="Единица измерения")
     source_quote: Optional[str] = Field(default=None, description="Короткая цитата из договора")
+    evidence: Optional[str] = Field(default=None, description="Фрагмент текста, подтверждающий текущее условие")
 
 
 class ContractChangeResult(BaseModel):
     doc_id: str
     employee_name: Optional[str] = None
     email: Optional[str] = None
+    emails: List[str] = Field(default_factory=list)
     old_value: Optional[int] = None
     new_value: Optional[int] = None
     unit: Optional[str] = None
     needs_change: bool
     reason: str
     source_quote: Optional[str] = None
+    evidence: Optional[str] = None
     draft_subject: Optional[str] = None
     draft_body: Optional[str] = None
 
@@ -72,3 +76,19 @@ class ContractChangeRequest(BaseModel):
 class ContractChangeResponse(BaseModel):
     policy_rule: PolicyRuleExtract
     results: List[ContractChangeResult]
+
+
+class EmailDraft(BaseModel):
+    doc_id: str
+    to: List[str] = Field(default_factory=list)
+    subject: str
+    body: str
+
+
+class EmailDraftContent(BaseModel):
+    subject: str = Field(description="Короткая тема письма без markdown и без префикса Subject")
+    body: str = Field(description="Тело письма на русском, нейтральное, деловое, без выдуманных вложений, сроков и placeholder'ов")
+
+
+class SendDraftsStubResponse(BaseModel):
+    drafts: List[EmailDraft]

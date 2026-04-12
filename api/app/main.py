@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+import os
 from pathlib import Path
 from dotenv import load_dotenv
 from typing import List
@@ -13,6 +14,7 @@ from .schemas import (
     UploadResponse, AskRequest, AskResponse,
     ComplianceRequest, ComplianceVerdict,
     ContractChangeRequest, ContractChangeResponse,
+    SendDraftsStubResponse,
 )
 
 app = FastAPI(title="Vacation Policy RAG Agent")
@@ -140,5 +142,29 @@ def analyze_contract_change(req: ContractChangeRequest):
             policy_doc_id=req.policy_doc_id,
             contract_doc_ids=req.contract_doc_ids,
         )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/contracts/send-drafts-stub", response_model=SendDraftsStubResponse)
+def send_drafts_stub(req: ContractChangeRequest):
+    if not store.has_doc(req.policy_doc_id, "policy"):
+        raise HTTPException(status_code=400, detail=f"Policy документ не найден: {req.policy_doc_id}")
+
+    missing_contracts = [doc_id for doc_id in req.contract_doc_ids if not store.has_doc(doc_id, "contract")]
+    if missing_contracts:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Не найдены contract документы: {', '.join(missing_contracts)}"
+        )
+
+    try:
+        analysis = store.analyze_contract_changes(
+            policy_doc_id=req.policy_doc_id,
+            contract_doc_ids=req.contract_doc_ids,
+        )
+        drafts = store.collect_email_drafts(analysis)
+        sent = store.send_email_stub(drafts)
+        return SendDraftsStubResponse(drafts=sent)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

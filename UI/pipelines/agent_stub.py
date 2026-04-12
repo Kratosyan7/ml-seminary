@@ -18,6 +18,7 @@ class Pipeline:
 
     def __init__(self):
         self.api_base_url = os.getenv("AGENT_API_BASE_URL", "http://host.docker.internal:8000").rstrip("/")
+        self.request_timeout = int(os.getenv("AGENT_API_TIMEOUT_SECONDS", "120"))
 
     async def on_startup(self):
         print(f"[agent_stub] startup, api={self.api_base_url}")
@@ -61,7 +62,7 @@ class Pipeline:
             headers=headers,
             method=method,
         )
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with urllib.request.urlopen(req, timeout=self.request_timeout) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def _format_analysis(self, payload: Dict[str, Any]) -> str:
@@ -83,10 +84,11 @@ class Pipeline:
 
         for item in results:
             status = "нужно изменить" if item.get("needs_change") else "ok"
+            emails = item.get("emails") or []
             lines.extend([
                 f"- {item.get('doc_id')}: {status}",
                 f"  Сотрудник: {item.get('employee_name') or 'не найден'}",
-                f"  Email: {item.get('email') or 'не найден'}",
+                f"  Emails: {', '.join(emails) or item.get('email') or 'не найдены'}",
                 f"  Старое значение: {item.get('old_value')}",
                 f"  Новое значение: {item.get('new_value')}",
                 f"  Причина: {item.get('reason')}",
@@ -97,7 +99,8 @@ class Pipeline:
             lines.extend(["", "Черновики уведомлений:"])
             for item in drafts:
                 lines.extend([
-                    f"- {item.get('doc_id')}: {item.get('draft_subject') or 'без темы'}",
+                    f"- {item.get('doc_id')}",
+                    f"  Тема: {item.get('draft_subject') or 'без темы'}",
                     item.get("draft_body") or "Черновик не сформирован.",
                     "",
                 ])
