@@ -1,0 +1,45 @@
+services:
+  # ollama:   # Если вы хотите запустить ollama внутри docker-compose, раскомментируйте этот блок и закомментируйте строку OLLAMA_BASE_URL=http://host.docker.internal:11434 в разделе environment для pipelines
+  #   image: ollama/ollama:latest
+  #   container_name: ollama
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama:/root/.ollama
+  #   restart: unless-stopped
+
+  pipelines:
+    image: ghcr.io/open-webui/pipelines:main
+    container_name: pipelines
+    ports:
+      - "9099:9099"
+    volumes:
+      - ./pipelines:/app/pipelines
+    environment:
+      - AGENT_API_BASE_URL=http://host.docker.internal:8000
+    # depends_on:
+    #   - ollama
+    restart: unless-stopped
+
+  openwebui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: openwebui
+    ports:
+      - "3000:8080"
+    volumes:
+      - openwebui_data:/app/backend/data
+    depends_on:
+      - pipelines
+      # - ollama    # если вы используете ollama внутри docker-compose, то раскомментируйте эту строку, чтобы openwebui ждал запуска ollama
+    environment:
+    # Автоподключение OpenAI-compatible endpoint = твой pipelines
+      - OPENAI_API_BASE_URL=http://pipelines:9099
+      - OPENAI_API_KEY=0p3n-w3bu!
+      
+      - DEFAULT_MODELS=agent_stub   # Внимание это уникальный id модели, который должен совпадать с id модели в pipelines/agent_stub.py
+      - DEFAULT_PINNED_MODELS=agent_stub  # Внимание это уникальный id модели, который должен совпадать с id модели в pipelines/agent_stub.py 
+    restart: unless-stopped
+
+volumes:
+  openwebui_data:
+  # ollama:
