@@ -92,3 +92,39 @@ class EmailDraftContent(BaseModel):
 
 class SendDraftsStubResponse(BaseModel):
     drafts: List[EmailDraft]
+
+
+class SendDraftsResponse(BaseModel):
+    sent: List[EmailDraft]
+
+
+class AuditRun(BaseModel):
+    id: str
+    created_at: str
+    event_type: str
+    status: str
+    policy_doc_id: Optional[str] = None
+    contract_doc_ids: List[str] = Field(default_factory=list)
+    needs_change_count: Optional[int] = None
+    payload: Optional[dict] = None
+    error: Optional[str] = None
+
+
+class AuditRunListResponse(BaseModel):
+    runs: List[AuditRun]
+
+
+class BatchJobResponse(BaseModel):
+    job_id: str
+    status: str
+    created_at: str
+    completed_at: Optional[str] = None
+    result: Optional[ContractChangeResponse] = None
+    error: Optional[str] = None
+
+
+class DemoMetricsResponse(BaseModel):
+    classification: dict
+    extraction: dict
+    total_contracts: int
+    per_doc: List[dict]

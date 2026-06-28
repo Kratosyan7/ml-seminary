@@ -1,0 +1,86 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: rag_agent
+      POSTGRES_USER: rag_agent
+      POSTGRES_PASSWORD: rag_agent
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6380:6379"
+
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    environment:
+      USE_OPENAI: "0"
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_CHAT_MODEL: qwen2.5:7b
+      PRELOAD_DEMO_DOCS: "1"
+      DATABASE_URL: postgresql://rag_agent:rag_agent@postgres:5432/rag_agent
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      USE_CELERY_QUEUE: "1"
+      SMTP_USE_TLS: "1"
+      ALLOWED_ORIGINS: http://localhost:3000
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+
+  worker:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    working_dir: /app/api
+    command: celery -A app.tasks.celery_app worker --loglevel=info
+    environment:
+      USE_OPENAI: "0"
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_CHAT_MODEL: qwen2.5:7b
+      PRELOAD_DEMO_DOCS: "0"
+      DATABASE_URL: postgresql://rag_agent:rag_agent@postgres:5432/rag_agent
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    depends_on:
+      - postgres
+      - redis
+
+  pipelines:
+    image: ghcr.io/open-webui/pipelines:main
+    ports:
+      - "9099:9099"
+    volumes:
+      - ./UI/pipelines:/app/pipelines
+    environment:
+      AGENT_API_BASE_URL: http://api:8000
+      AGENT_API_TIMEOUT_SECONDS: "120"
+      AGENT_MODEL_NAME: qwen2.5:7b
+    depends_on:
+      - api
+
+  openwebui:
+    image: ghcr.io/open-webui/open-webui:main
+    ports:
+      - "3000:8080"
+    volumes:
+      - openwebui_data:/app/backend/data
+    environment:
+      OPENAI_API_BASE_URL: http://pipelines:9099
+      OPENAI_API_KEY: 0p3n-w3bu!
+      DEFAULT_MODELS: agent_stub
+      DEFAULT_PINNED_MODELS: agent_stub
+    depends_on:
+      - pipelines
+
+volumes:
+  postgres_data:
+  openwebui_data:

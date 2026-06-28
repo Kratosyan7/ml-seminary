@@ -28,8 +28,8 @@
 
 Важно:
 
-- письма не отправляются автоматически
-- система делает только черновики
+- есть `demo` режим
+- есть `production-like` режим
 - решение работает локально через `Ollama`
 
 
@@ -47,12 +47,14 @@ Backend:
 - вызывает локальную модель через `Ollama`
 - сравнивает условия
 - возвращает JSON-результат
+- умеет писать аудит и batch jobs в БД
+- умеет отдавать Prometheus-метрики
 
 Главные файлы:
 
-- [main.py](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/api/app/main.py)
-- [rag.py](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/api/app/rag.py)
-- [schemas.py](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/api/app/schemas.py)
+- [main.py](api/app/main.py)
+- [rag.py](api/app/rag.py)
+- [schemas.py](api/app/schemas.py)
 
 ### 2. Локальная модель через Ollama
 
@@ -68,7 +70,7 @@ Backend:
 
 Файл:
 
-- [agent_stub.py](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/UI/pipelines/agent_stub.py)
+- [agent_stub.py](UI/pipelines/agent_stub.py)
 
 Он получает запрос из UI, обращается в backend и показывает итоговый ответ пользователю.
 
@@ -77,21 +79,26 @@ Backend:
 
 Для демонстрации используются файлы:
 
-- [demo_policy.md](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/notebooks/data/demo_policy.md)
-- [contract_001.md](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/notebooks/contracts/contract_001.md)
-- [contract_002.md](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/notebooks/contracts/contract_002.md)
-- [contract_003.md](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/notebooks/contracts/contract_003.md)
-- [contract_004.md](/Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/notebooks/contracts/contract_004.md)
+- [demo_policy.md](notebooks/data/demo_policy.md)
+- [contract_001.md](notebooks/contracts/contract_001.md)
+- [contract_002.md](notebooks/contracts/contract_002.md)
+- [contract_003.md](notebooks/contracts/contract_003.md)
+- [contract_004.md](notebooks/contracts/contract_004.md)
 
 При старте backend эти demo-документы можно автоматически подгружать через `PRELOAD_DEMO_DOCS=1`.
 
 
 ## Как запустить
 
+Есть 2 режима.
+
+- Простой demo: backend локально + Open WebUI отдельно
+- Production-like: `Postgres + Redis + Celery + SMTP + Open WebUI` через compose
+
 ### 1. Подготовить Python-окружение
 
 ```bash
-cd /Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary
+cd ml-seminary
 python3 -m venv .venv
 source .venv/bin/activate
 cd api
@@ -115,7 +122,7 @@ ollama pull qwen2.5:1.5b
 ### 3. Запустить backend
 
 ```bash
-cd /Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/api
+cd api
 source ../.venv/bin/activate
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
@@ -136,7 +143,7 @@ http://localhost:8000/docs
 ### 4. Запустить Open WebUI
 
 ```bash
-cd /Users/ashotmirzoyan/Documents/ML-Seminary/ml-seminary/UI
+cd UI
 docker compose up
 ```
 
@@ -144,6 +151,107 @@ docker compose up
 
 ```text
 http://localhost:3000
+```
+
+## Production-like запуск
+
+Этот режим включает:
+
+- `Postgres` для документов, аудита и batch jobs
+- `Redis` как брокер очереди
+- `Celery worker` для настоящей фоновой обработки
+- `SMTP` для реальной отправки писем
+- `/metrics` для мониторинга
+
+### 1. Нужные env
+
+Для реальной рассылки надо задать SMTP:
+
+```env
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USERNAME=your_user
+SMTP_PASSWORD=your_password
+SMTP_FROM_EMAIL=hr@example.com
+SMTP_USE_TLS=1
+```
+
+Для защиты mutating endpoint'ов можно задать:
+
+```env
+API_KEY=super-secret-key
+```
+
+Тогда в запросах на upload, batch и real send нужен заголовок:
+
+```text
+X-API-Key: super-secret-key
+```
+
+### 2. Поднять весь стек
+
+```bash
+cd ml-seminary
+docker compose -f docker-compose.prod.yml up --build
+```
+
+Сервисы:
+
+- `api` → `http://localhost:8000`
+- `openwebui` → `http://localhost:3000`
+- `postgres` → `localhost:5433`
+- `redis` → `localhost:6380`
+
+### 3. Проверки
+
+Готовность:
+
+```bash
+curl http://localhost:8000/health
+curl http://localhost:8000/health/ready
+curl http://localhost:8000/metrics
+```
+
+Batch job:
+
+```bash
+curl -s -X POST "http://localhost:8000/contracts/analyze-change/batch" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: super-secret-key" \
+  -d '{
+    "policy_doc_id": "policy_main",
+    "contract_doc_ids": ["contract_001", "contract_002", "contract_003", "contract_004"]
+  }'
+```
+
+Потом проверить job:
+
+```bash
+curl http://localhost:8000/contracts/jobs/JOB_ID
+```
+
+Аудит:
+
+```bash
+curl http://localhost:8000/audit/runs
+```
+
+Метрики:
+
+```bash
+curl http://localhost:8000/quality/demo-metrics
+```
+
+Реальная отправка email:
+
+```bash
+curl -s -X POST "http://localhost:8000/contracts/send-drafts" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: super-secret-key" \
+  -d '{
+    "policy_doc_id": "policy_main",
+    "contract_doc_ids": ["contract_001", "contract_002", "contract_003", "contract_004"]
+  }'
 ```
 
 
@@ -186,6 +294,12 @@ curl -s -X POST "http://localhost:8000/contracts/analyze-change" \
 
 Он ничего реально не отправляет, а только возвращает подготовленные draft-письма и печатает их в лог.
 
+Есть и реальный endpoint:
+
+### `POST /contracts/send-drafts`
+
+Он отправляет письма через SMTP, если SMTP настроен.
+
 
 ## Ожидаемый результат demo
 
@@ -211,13 +325,26 @@ curl -s -X POST "http://localhost:8000/contracts/analyze-change" \
 6. Вся система работает локально через `Ollama`, без OpenAI API.
 
 
+## Что уже есть кроме demo
+
+- хранение документов в БД
+- аудит запусков в БД
+- batch jobs в БД
+- реальная очередь через `Celery + Redis`
+- реальная email-отправка через `SMTP`
+- API key для опасных endpoint'ов
+- rate limit middleware
+- security headers
+- `Prometheus` метрики на `/metrics`
+
 ## Ограничения текущей версии
 
-- документы и индекс хранятся в памяти
-- нет постоянного хранилища результатов
-- нет реальной рассылки
-- нет production-механизмов вроде очередей, аудита и контроля доступа
-- тексты писем сделаны как demo-черновики
+- retrieval индекс все еще rebuild'ится в памяти процесса
+- нет отдельного object storage для файлов
+- нет полноценного secret manager
+- нет SSO/RBAC
+- SMTP требует реальные учетные данные
+- monitoring есть базовый, не full observability
 
 
 ## Коротко

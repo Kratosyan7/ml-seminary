@@ -1,0 +1,35 @@
+{
+  "policy_doc_id": "policy_main",
+  "contract_doc_ids": [
+    "contract_001",
+    "contract_002",
+    "contract_003",
+    "contract_004"
+  ],
+  "contracts": [
+    {
+      "doc_id": "contract_001",
+      "old_value": 7,
+      "needs_change": true,
+      "emails": ["ivanov.ii@company.ru"]
+    },
+    {
+      "doc_id": "contract_002",
+      "old_value": 14,
+      "needs_change": false,
+      "emails": ["maria.petrova@company.ru"]
+    },
+    {
+      "doc_id": "contract_003",
+      "old_value": 8,
+      "needs_change": true,
+      "emails": ["john.smith@company.ru"]
+    },
+    {
+      "doc_id": "contract_004",
+      "old_value": 10,
+      "needs_change": false,
+      "emails": ["anna.bolein@company.ru"]
+    }
+  ]
+}

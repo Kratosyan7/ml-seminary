@@ -59,10 +59,55 @@ def build_llm():
     from langchain_ollama import ChatOllama
 
     return ChatOllama(
-        model=os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:1.5b"),
+        model=os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:7b"),
         temperature=0,
         base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
     )
+
+
+def _infer_question_scope(question: str) -> Optional[str]:
+    normalized = (question or "").lower()
+
+    contract_markers = [
+        "договор",
+        "сотрудник",
+        "работник",
+        "контракт",
+        "email",
+        "фио",
+    ]
+    if any(token in normalized for token in contract_markers):
+        return "contract"
+
+    policy_markers = [
+        "политик",
+        "регламент",
+        "правил",
+        "заявлен",
+        "отпуск",
+        "отпуска",
+        "части отпуска",
+        "дней до начала отпуска",
+    ]
+    if any(token in normalized for token in policy_markers):
+        return "policy"
+
+    return None
+
+
+def _extract_doc_ids_from_question(question: str) -> List[str]:
+    if not question:
+        return []
+    found = re.findall(r"\b(?:policy|contract)_[a-zA-Z0-9]+\b", question, flags=re.IGNORECASE)
+    deduped: List[str] = []
+    seen = set()
+    for item in found:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
 
 
 def _normalize_unit(unit: Optional[str]) -> Optional[str]:
@@ -155,8 +200,28 @@ def _clean_draft_body(text: str) -> str:
     body = re.sub(r"review the attached document.*", "", body, flags=re.IGNORECASE)
     body = re.sub(r"kindly provide us with a supporting document.*", "", body, flags=re.IGNORECASE)
     body = re.sub(r"Пожалуйста, уведомите нас.*", "", body, flags=re.IGNORECASE)
+    body = re.sub(r"Для подтверждения изменений рекомендуется обратиться.*", "", body, flags=re.IGNORECASE)
+    body = re.sub(r"\*\*(.*?)\*\*", r"\1", body)
+    body = re.sub(r"\[ФИО сотрудника\]", "Коллега", body, flags=re.IGNORECASE)
+    body = re.sub(r"С уважением,\s*$", "", body, flags=re.IGNORECASE)
     body = re.sub(r"\n{3,}", "\n\n", body)
     return body.strip()
+
+
+def _mask_email(email: Optional[str]) -> str:
+    if not email:
+        return "(no email)"
+    local, _, domain = email.partition("@")
+    if not domain:
+        return "***"
+    visible = local[:1] if local else ""
+    return f"{visible}***@{domain}"
+
+
+def _mask_name(name: Optional[str]) -> str:
+    if not name:
+        return "(unknown)"
+    return name[:1] + "***"
 
 
 def _enrich_policy_rule(rule: PolicyRuleExtract, context: str) -> PolicyRuleExtract:
@@ -230,7 +295,7 @@ def load_text_from_file(filename: str, content: bytes) -> str:
 # -----------------------------
 class RAGStore:
     def __init__(self):
-        self.embeddings = build_embeddings()
+        self.embeddings = None
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=int(os.getenv("CHUNK_SIZE", "900")),
             chunk_overlap=int(os.getenv("CHUNK_OVERLAP", "150")),
@@ -239,6 +304,28 @@ class RAGStore:
 
         # doc_id -> (doc_type, raw_text)
         self.docs: Dict[str, Tuple[str, str]] = {}
+
+    def _ensure_embeddings(self):
+        if self.embeddings is None:
+            self.embeddings = build_embeddings()
+
+    def load_documents(self, documents: List[Dict[str, str]], rebuild_index: bool = True) -> int:
+        self.docs = {
+            item["doc_id"]: (item["doc_type"], item["text"])
+            for item in documents
+        }
+        if rebuild_index:
+            return self._rebuild_index()
+        self.vectorstore = None
+        return len(self.docs)
+
+    def upsert_text_document(self, *, doc_type: str, filename: str, text: str, doc_id: Optional[str] = None) -> Tuple[str, int]:
+        if not text.strip():
+            raise ValueError("Документ пустой после извлечения текста.")
+        if doc_id is None:
+            doc_id = f"{doc_type}_{uuid.uuid4().hex[:10]}"
+        self.docs[doc_id] = (doc_type, text)
+        return doc_id, self._rebuild_index()
 
     def _rebuild_index(self) -> int:
         all_docs: List[Document] = []
@@ -252,6 +339,7 @@ class RAGStore:
             self.vectorstore = None
             return 0
 
+        self._ensure_embeddings()
         chunks = self.text_splitter.split_documents(all_docs)
         self.vectorstore = FAISS.from_documents(chunks, self.embeddings)
         return len(chunks)
@@ -303,13 +391,30 @@ class RAGStore:
     def ask(self, question: str, doc_ids: Optional[List[str]] = None) -> Tuple[str, List[str]]:
         llm = build_llm()
 
-        ctx_docs = self._search(question, k=10, doc_ids=doc_ids)
+        explicit_doc_ids = _extract_doc_ids_from_question(question)
+        if explicit_doc_ids:
+            doc_ids = explicit_doc_ids
+
+        scope = _infer_question_scope(question)
+        ctx_docs = self._search(question, k=6, doc_ids=doc_ids, doc_type=scope)
+        if not ctx_docs and scope is not None:
+            ctx_docs = self._search(question, k=6, doc_ids=doc_ids)
         context = self._build_context(ctx_docs)
+
+        if not context.strip():
+            return ("В документах нет ответа на этот вопрос.", [])
 
         prompt = ChatPromptTemplate.from_messages([
             ("system",
-             "Ты помощник по кадровым документам. Отвечай строго по предоставленному контексту. "
-             "Если данных недостаточно — скажи, чего не хватает."),
+             "Ты строгий помощник по кадровым документам.\n"
+             "Правила ответа:\n"
+             "1. Используй только факты из контекста.\n"
+             "2. Не выдумывай и не достраивай выводы.\n"
+             "3. Если вопрос задан на русском, отвечай только на русском.\n"
+             "4. Не переключайся на английский, китайский или другой язык без прямой просьбы.\n"
+             "5. Если ответа нет в контексте, верни ровно фразу: 'В документах нет ответа на этот вопрос.'\n"
+             "6. Отвечай коротко и по существу, без лишних вступлений.\n"
+             "7. Если вопрос про конкретный policy или contract, не обобщай на другие документы."),
             ("human",
              "Контекст:\n{context}\n\nВопрос:\n{question}\n\nОтвет:"),
         ])
@@ -318,7 +423,7 @@ class RAGStore:
         out = llm.invoke(msg)
 
         citations = []
-        for d in ctx_docs:
+        for d in ctx_docs[:3]:
             md = d.metadata or {}
             citations.append(f"{md.get('doc_type')}:{md.get('doc_id')}")
 
@@ -371,10 +476,11 @@ class RAGStore:
         prompt = ChatPromptTemplate.from_messages([
             ("system",
              "Ты извлекаешь правило из кадровой policy.\n"
-             "Верни только структурированные данные.\n"
-             "Не выдумывай.\n"
+             "Работай строго по контексту.\n"
+             "Не выдумывай и не интерпретируй лишнее.\n"
+             "Верни только структурированные поля.\n"
              "Если числа нет, new_value=null.\n"
-             "source_quote дай короткой цитатой из контекста."),
+             "source_quote дай короткой точной цитатой из контекста."),
             ("human",
              "Контекст policy:\n{context}\n\n"
              "Извлеки правило про минимальную длительность части отпуска или ближайшее числовое правило по отпуску."),
@@ -405,6 +511,7 @@ class RAGStore:
         prompt = ChatPromptTemplate.from_messages([
             ("system",
              "Ты извлекаешь данные из трудового договора.\n"
+             "Работай строго по контексту.\n"
              "Верни только структурированные данные.\n"
              "Не выдумывай.\n"
              "Если email или число не найдены, верни null.\n"
@@ -540,7 +647,7 @@ class RAGStore:
         for draft in drafts:
             print("=== EMAIL DRAFT ===")
             print("Doc ID:", draft.doc_id)
-            print("To:", ", ".join(draft.to) if draft.to else "(no emails)")
+            print("To:", ", ".join([_mask_email(email) for email in draft.to]) if draft.to else "(no emails)")
             print("Subject:", draft.subject)
             print(draft.body)
             print()

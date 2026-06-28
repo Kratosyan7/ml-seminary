@@ -18,6 +18,7 @@ services:
     environment:
       - AGENT_API_BASE_URL=http://host.docker.internal:8000
       - AGENT_API_TIMEOUT_SECONDS=120
+      - AGENT_MODEL_NAME=qwen2.5:7b
     # depends_on:
     #   - ollama
     restart: unless-stopped
